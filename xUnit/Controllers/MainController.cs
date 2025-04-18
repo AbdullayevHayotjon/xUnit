@@ -1,4 +1,6 @@
-﻿using Microsoft.AspNetCore.Authorization;
+﻿using ArticleForDT;
+using ArticleForDT.Models;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
@@ -11,8 +13,8 @@ namespace xUnit.Controllers
     public class MainController : ControllerBase
     {
         private readonly AppDbContext _db;
-        private readonly JwtService _jwtService;
-        public MainController(AppDbContext db, JwtService jwtService)
+        private readonly IJwtService _jwtService;
+        public MainController(AppDbContext db, IJwtService jwtService)
         {
             _db = db;
             _jwtService = jwtService;
@@ -67,7 +69,14 @@ namespace xUnit.Controllers
             var userId = User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             var articles = await _db.Articles
                 .Where(a => a.StudentId == int.Parse(userId))
-                .Select(a => new { a.Title, a.Status, a.ReviewComment, a.Grade, a.UploadDate })
+                .Select(a => new ArticleResponseDto
+                {
+                    Title = a.Title,
+                    Status = a.Status,
+                    ReviewComment = a.ReviewComment,
+                    Grade = a.Grade,
+                    UploadDate = a.UploadDate
+                })
                 .ToListAsync();
 
             return Ok(articles);
@@ -115,21 +124,21 @@ namespace xUnit.Controllers
 
             var articles = await _db.Articles
                 .Include(a => a.Student)
-                .Select(a => new
+                .Select(a => new ArticleDetailsResponseDto
                 {
-                    a.Id,
-                    a.Title,
+                    Id = a.Id,
+                    Title = a.Title,
                     FileUrl = baseUrl + "/uploads/" + Path.GetFileName(a.FilePath),
-                    a.Status,
-                    a.Grade,
-                    a.ReviewComment,
-                    a.UploadDate,
-                    Student = new
+                    Status = a.Status,
+                    Grade = a.Grade,
+                    ReviewComment = a.ReviewComment,
+                    UploadDate = a.UploadDate,
+                    Student = new StudentResponseDto
                     {
-                        a.Student.Id,
-                        a.Student.FirstName,
-                        a.Student.LastName,
-                        a.Student.Email
+                        Id = a.Student.Id,
+                        FirstName = a.Student.FirstName,
+                        LastName = a.Student.LastName,
+                        Email = a.Student.Email
                     }
                 })
                 .ToListAsync();

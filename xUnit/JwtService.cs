@@ -1,9 +1,10 @@
-﻿using Microsoft.IdentityModel.Tokens;
+﻿using ArticleForDT;
+using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 
-public class JwtService
+public class JwtService : IJwtService
 {
     private readonly string _secretKey = "sDk2J#8L@tR5eX9b%WqNvFp#yH1mTk6z"; // Secret keyni environment variableda saqlash yaxshiroq
     private readonly string _issuer = "Article"; // Tokenni yaratuvchi tashkilot nomi

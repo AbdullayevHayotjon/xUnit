@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
+﻿using ArticleForDT;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -42,7 +43,7 @@ builder.Services.AddSwaggerGen(c =>
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-builder.Services.AddScoped<JwtService>();
+builder.Services.AddScoped<IJwtService, JwtService>();
 
 // JWT AUTH CONFIGURATION
 var secretKey = "sDk2J#8L@tR5eX9b%WqNvFp#yH1mTk6z";
