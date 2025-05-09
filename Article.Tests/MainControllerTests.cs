@@ -313,7 +313,7 @@ namespace xUnit.Tests
                 Status = "Yuborilgan",
                 UploadDate = DateTime.UtcNow,
                 StudentId = student.Id,
-                FilePath = "uploads/review.pdf" // FilePath qo'shildi
+                FilePath = "uploads/review.pdf"
             };
             _context.Articles.Add(article);
             await _context.SaveChangesAsync();
