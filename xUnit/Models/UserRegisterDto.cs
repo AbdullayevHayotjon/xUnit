@@ -5,7 +5,7 @@ namespace xUnit.Models
     public class UserRegisterDto
     {
         [Required(ErrorMessage = "Ism majburiy")]
-        [MaxLength(50)]
+        [MinLength(50)]
         public string FirstName { get; set; }
 
         [Required(ErrorMessage = "Familiya majburiy")]

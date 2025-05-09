@@ -8,67 +8,82 @@ using xUnit.Models;
 
 namespace xUnit.Controllers
 {
-    [Route("api/[controller]")]
     [ApiController]
+    [Route("api/v1/[controller]")]
     public class MainController : ControllerBase
     {
         private readonly AppDbContext _db;
         private readonly IJwtService _jwtService;
-        public MainController(AppDbContext db, IJwtService jwtService)
+        private readonly ILogger<MainController> _logger;
+        private readonly string _uploadFolder;
+
+        public MainController(
+            AppDbContext db,
+            IJwtService jwtService,
+            IWebHostEnvironment env,
+            IConfiguration config,
+            ILogger<MainController> logger)
         {
             _db = db;
             _jwtService = jwtService;
+            _logger = logger;
+            // Configure upload folder via appsettings.json
+            var relativePath = config.GetValue<string>("UploadSettings:RelativePath") ?? "uploads";
+            _uploadFolder = Path.Combine(env.WebRootPath, relativePath);
         }
+
         [HttpPost("register")]
-        public async Task<IActionResult> Register(UserRegisterDto dto)
+        [ProducesResponseType(200)]
+        [ProducesResponseType(400)]
+        public async Task<IActionResult> Register([FromBody] UserRegisterDto dto, CancellationToken cancellationToken)
         {
             if (!ModelState.IsValid)
-                return BadRequest("Invalid data");
+                return BadRequest(ModelState);
 
-            // Foydalanuvchi mavjudligini tekshirish
-            var existingUser = await _db.Users.FirstOrDefaultAsync(u => u.Email == dto.Email);
-            if (existingUser != null)
-                return BadRequest("Email oldindan mavjud");
+            if (await _db.Users.AnyAsync(u => u.Email == dto.Email, cancellationToken))
+                return Conflict(new { message = "Email already exists" });
 
-            // Yangi foydalanuvchi ma'lumotlarini yaratish
             var user = new User
             {
-                FirstName = dto.FirstName,
-                LastName = dto.LastName,
-                Email = dto.Email,
+                FirstName = dto.FirstName.Trim(),
+                LastName = dto.LastName.Trim(),
+                Email = dto.Email.Trim().ToLowerInvariant(),
                 PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password)
             };
 
-            // Foydalanuvchini Users jadvaliga qo‘shish
-            _db.Users.Add(user);
-            await _db.SaveChangesAsync();
+            await _db.Users.AddAsync(user, cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
 
-            return Ok("User muvaffaqqiyatli ro'yhatdan o'tdi");
+            return Ok(new { message = "Registration successful" });
         }
-
 
         [HttpPost("login")]
-        public async Task<IActionResult> Login(UserLoginDto dto)
+        [ProducesResponseType(200)]
+        [ProducesResponseType(401)]
+        public async Task<IActionResult> Login([FromBody] UserLoginDto dto, CancellationToken cancellationToken)
         {
-            var user = await _db.Users.FirstOrDefaultAsync(x => x.Email == dto.Email);
+            var user = await _db.Users
+                .AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Email == dto.Email.Trim().ToLowerInvariant(), cancellationToken);
+
             if (user == null || !BCrypt.Net.BCrypt.Verify(dto.Password, user.PasswordHash))
-                return Unauthorized("Email yoki Password xato");
+                return Unauthorized(new { message = "Invalid email or password" });
 
-            // Tokenni yaratish
-            var tokenString = _jwtService.GenerateToken(user);
-
-            return Ok(new { token = tokenString }); // Front-end ga token yuborish
+            var token = _jwtService.GenerateToken(user);
+            return Ok(new { token });
         }
 
-
-
-        [Authorize(Roles = "Student")]
+        [Authorize(Roles = Roles.Student)]
         [HttpGet("articles/my")]
-        public async Task<IActionResult> GetMyArticles()
+        public async Task<ActionResult<IEnumerable<ArticleResponseDto>>> GetMyArticles(CancellationToken cancellationToken)
         {
-            var userId = User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (!int.TryParse(userId, out var studentId))
+                return Unauthorized();
+
             var articles = await _db.Articles
-                .Where(a => a.StudentId == int.Parse(userId))
+                .Where(a => a.StudentId == studentId)
+                .AsNoTracking()
                 .Select(a => new ArticleResponseDto
                 {
                     Title = a.Title,
@@ -77,58 +92,66 @@ namespace xUnit.Controllers
                     Grade = a.Grade,
                     UploadDate = a.UploadDate
                 })
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
 
             return Ok(articles);
         }
 
-        [Authorize(Roles = "Student")]
+        [Authorize(Roles = Roles.Student)]
         [HttpPost("articles/upload")]
-        public async Task<IActionResult> UploadArticle([FromForm] ArticleUploadDto dto)
+        public async Task<IActionResult> UploadArticle([FromForm] ArticleUploadDto dto, CancellationToken cancellationToken)
         {
-            if (dto.File == null || !dto.File.FileName.EndsWith(".pdf"))
-                return BadRequest("Faqat .pdf fayl yuklash lozim");
+            if (dto.File == null)
+                return BadRequest(new { message = "File is required" });
 
-            var uploadsFolder = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads");
+            if (Path.GetExtension(dto.File.FileName).ToLowerInvariant() != ".pdf")
+                return BadRequest(new { message = "Only PDF files are allowed" });
 
-            if (!Directory.Exists(uploadsFolder))
-                Directory.CreateDirectory(uploadsFolder);
+            Directory.CreateDirectory(_uploadFolder);
+            var uniqueFileName = $"{Guid.NewGuid():N}{Path.GetExtension(dto.File.FileName)}";
+            var savedPath = Path.Combine(_uploadFolder, uniqueFileName);
 
-            var uniqueFileName = $"{Guid.NewGuid()}_{dto.File.FileName}";
-            var filePath = Path.Combine(uploadsFolder, uniqueFileName);
+            try
+            {
+                await using var stream = new FileStream(savedPath, FileMode.Create);
+                await dto.File.CopyToAsync(stream, cancellationToken);
+            }
+            catch (IOException ex)
+            {
+                _logger.LogError(ex, "Error saving file {FileName}", dto.File.FileName);
+                return StatusCode(500, new { message = "Could not save the file" });
+            }
 
-            using var stream = new FileStream(filePath, FileMode.Create);
-            await dto.File.CopyToAsync(stream);
-
+            var studentId = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier));
             var article = new Article
             {
-                Title = dto.Title,
+                Title = dto.Title.Trim(),
                 FilePath = Path.Combine("uploads", uniqueFileName),
-                Status = "Yuborilgan",
-                StudentId = int.Parse(User?.FindFirst(ClaimTypes.NameIdentifier)?.Value),
+                Status = ArticleStatus.Submitted,
+                StudentId = studentId,
                 UploadDate = DateTime.UtcNow
             };
 
-            _db.Articles.Add(article);
-            await _db.SaveChangesAsync();
+            await _db.Articles.AddAsync(article, cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
 
-            return Ok("Maqola tekshiruvchiga yuborildi");
+            return Ok(new { message = "Article submitted for review" });
         }
 
-
-        [Authorize(Roles = "Teacher")]
+        [Authorize(Roles = Roles.Teacher)]
         [HttpGet("articles")]
-        public async Task<IActionResult> GetAllArticles()
+        public async Task<ActionResult<IEnumerable<ArticleDetailsResponseDto>>> GetAllArticles(CancellationToken cancellationToken)
         {
-            var baseUrl = $"{Request.Scheme}://{Request.Host}";
+            var baseUrl = $"{Request.Scheme}://{Request.Host}/uploads";
 
             var articles = await _db.Articles
                 .Include(a => a.Student)
+                .AsNoTracking()
                 .Select(a => new ArticleDetailsResponseDto
                 {
                     Id = a.Id,
                     Title = a.Title,
-                    FileUrl = baseUrl + "/uploads/" + Path.GetFileName(a.FilePath),
+                    FileUrl = baseUrl + Path.GetFileName(a.FilePath),
                     Status = a.Status,
                     Grade = a.Grade,
                     ReviewComment = a.ReviewComment,
@@ -141,27 +164,38 @@ namespace xUnit.Controllers
                         Email = a.Student.Email
                     }
                 })
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
 
             return Ok(articles);
         }
 
-
-        [Authorize(Roles = "Teacher")]
+        [Authorize(Roles = Roles.Teacher)]
         [HttpPost("articles/{id}/review")]
-        public async Task<IActionResult> ReviewArticle(int id, [FromBody] ReviewDto dto)
+        public async Task<IActionResult> ReviewArticle(int id, [FromBody] ReviewDto dto, CancellationToken cancellationToken)
         {
-            var article = await _db.Articles.FindAsync(id);
-            if (article == null) return NotFound();
+            var article = await _db.Articles.FindAsync(new object[] { id }, cancellationToken);
+            if (article == null)
+                return NotFound(new { message = "Article not found" });
 
-            article.ReviewComment = dto.Comment;
+            article.ReviewComment = dto.Comment?.Trim();
             article.Grade = dto.Grade;
-            article.Status = "Baholangan";
+            article.Status = ArticleStatus.Reviewed;
 
-            await _db.SaveChangesAsync();
-
-            return Ok("Maqola muvaffaqqiyatli baholandi");
+            await _db.SaveChangesAsync(cancellationToken);
+            return Ok(new { message = "Article reviewed successfully" });
         }
+    }
 
+    // Supporting constants/enums
+    public static class Roles
+    {
+        public const string Student = "Student";
+        public const string Teacher = "Teacher";
+    }
+
+    public static class ArticleStatus
+    {
+        public const string Submitted = "Submitted";
+        public const string Reviewed = "Reviewed";
     }
 }
